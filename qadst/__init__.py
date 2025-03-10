@@ -1,8 +1,5 @@
 """QA Dataset Clustering Toolkit."""
 
-from .benchmarker import ClusterBenchmarker
-from .clusterer import HDBSCANQAClusterer
-from .testing import FakeClusterer
 from .version import (
     __author__,
     __author_email__,
@@ -14,9 +11,6 @@ from .version import (
 )
 
 __all__ = [
-    "HDBSCANQAClusterer",
-    "ClusterBenchmarker",
-    "FakeClusterer",
     "__version__",
     "__description__",
     "__license__",

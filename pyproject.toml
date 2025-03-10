@@ -7,16 +7,16 @@ name = "qadst"
 description = "QA Dataset Toolkit for clustering and benchmarking"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/sergeyklay/qadst"
-homepage = "https://github.com/sergeyklay/qadst"
-documentation = "https://github.com/sergeyklay/qadst"
+repository = "https://github.com/sergeyklay/qa-dataset-clustering"
+homepage = "https://github.com/sergeyklay/qa-dataset-clustering"
+documentation = "https://github.com/sergeyklay/qa-dataset-clustering"
 requires-python = ">=3.10, <4"
 authors = [{ name = "Serghei Iakovlev", email = "oss@serghei.pl" }]
 dynamic = ["dependencies", "version"]
 include = [
     { path = "tests", format = "sdist" },
-    "LICENSE",
     "INSTALL.md",
+    "LICENSE",
     "README.md",
     "USAGE.md",
 ]
@@ -24,23 +24,22 @@ include = [
 [tool.poetry]
 requires-poetry = ">=2.0"
 packages = [{ include = "qadst" }]
-version = "0.0.0"
+version = "0.2.0"
 
 [tool.poetry.urls]
-"Bug Tracker" = "https://github.com/sergeyklay/qadst/issues"
+"Bug Tracker" = "https://github.com/sergeyklay/qa-dataset-clustering/issues"
 
 [tool.poetry.scripts]
 qadst = "qadst.cli:main"
 
 [tool.poetry.dependencies]
 click = "^8.1.8"
-hdbscan = "^0.8.4"
-langchain = "^0.3.19"
-langchain-openai = "^0.3.6"
+matplotlib = "^3.10.1"
 numpy = "^2.2.3"
-pandas = "^2.2.3"
-python-dotenv = "^1.0.1"
-scikit-learn = "^1.6.1"
+scipy = "^1.15.2"
+sentence-transformers = "^3.4.1"
+torch = "^2.3.0"
+tqdm = "^4.67.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"

@@ -1,4 +1,4 @@
-# Installing qadst
+# Installation Guide
 
 This document provides detailed instructions for installing the QA Dataset Clustering Toolkit (qadst).
 
@@ -8,69 +8,61 @@ Before installing qadst, ensure you have the following prerequisites:
 
 - Python 3.10 or higher
 - [Poetry](https://python-poetry.org/) for dependency management
-- OpenAI API key (for embedding models and LLM-based features)
+- Git (for cloning the repository)
 
 ## Installation Steps
 
-### 1. Clone the Repository
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/sergeyklay/qa-dataset-clustering.git
+   cd qa-dataset-clustering
+   ```
+
+2. Install dependencies using Poetry:
+   ```bash
+   poetry install
+   ```
+
+3. Activate the virtual environment:
+   ```bash
+   poetry shell
+   ```
+
+## Verifying Installation
+
+To verify that the installation was successful, run:
 
 ```bash
-git clone https://github.com/sergeyklay/qa-dataset-clustering.git
-cd qa-dataset-clustering
+qadst --help
 ```
 
-### 2. Install Dependencies
-
-Using Poetry:
+Or using the Python module:
 
 ```bash
-poetry install
+python -m qadst --help
 ```
 
-This will create a virtual environment and install all required dependencies.
+You should see the help message with available command-line options.
 
-### 3. Configure Environment Variables
+## Dependencies
 
-Create a `.env` file from the template:
+The main dependencies include:
 
-```bash
-cp .env.example .env
-```
+- `numpy`: For numerical operations
+- `sentence-transformers`: For text embeddings
+- `scipy`: For distance calculations
+- `matplotlib`: For visualization
+- `torch`: For deep learning operations
+- `tqdm`: For progress bars
 
-Edit the `.env` file to include your API keys and other configuration:
+These dependencies will be automatically installed by Poetry.
 
-```
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4o
-OPENAI_EMBEDDING_MODEL=text-embedding-3-large
-```
+## Troubleshooting
 
-### 4. Verify Installation
+If you encounter any issues during installation:
 
-To verify that qadst is installed correctly, run:
+1. Ensure you have the correct Python version (3.10+)
+2. Make sure Poetry is properly installed
+3. Check for any error messages during the installation process
 
-```bash
-poetry run qadst --help
-```
-
-You should see the help message with available commands and options.
-
-## Development Installation
-
-If you're planning to contribute to qadst, install with development dependencies:
-
-```bash
-poetry install --with dev
-```
-
-This will install additional tools for testing, linting, and documentation.
-
-## Troubleshooting Installation
-
-### Common Issues
-
-- **Poetry not found**: Ensure Poetry is installed and in your PATH
-- **Python version mismatch**: Verify you have Python 3.10+ installed
-- **Dependency conflicts**: Try `poetry update` to resolve dependency issues
-
-If you encounter any other installation issues, please check the GitHub repository for known issues or open a new issue with details about your environment and the error messages you're seeing.
+For more detailed help, please open an issue on the [GitHub repository](https://github.com/sergeyklay/qa-dataset-clustering/issues).

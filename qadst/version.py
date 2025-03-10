@@ -16,7 +16,9 @@ try:
     __license__ = _package_metadata.get("License", "MIT")
     __author__ = _package_metadata.get("Author", "Serghei Iakovlev")
     __author_email__ = _package_metadata.get("Author-email", "oss@serghei.pl")
-    __url__ = _package_metadata.get("Home-page", "https://github.com/sergeyklay/qadst")
+    __url__ = _package_metadata.get(
+        "Home-page", "https://github.com/sergeyklay/qa-dataset-clustering"
+    )
 
 except importlib.metadata.PackageNotFoundError:
     # Package is not installed, use fallback values for development
@@ -25,7 +27,7 @@ except importlib.metadata.PackageNotFoundError:
     __license__ = "MIT"
     __author__ = "Serghei Iakovlev"
     __author_email__ = "oss@serghei.pl"
-    __url__ = "https://github.com/sergeyklay/qadst"
+    __url__ = "https://github.com/sergeyklay/qa-dataset-clustering"
 
 # Derived values
 __copyright__ = f"Copyright (C) 2025 {__author__}"

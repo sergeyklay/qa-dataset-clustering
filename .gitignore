@@ -1,9 +1,21 @@
-.venv
-.env
+# Python
 __pycache__
-junit.xml
-/.pytest_cache
+*.py[cod]
+.venv
+
+# Testing
 /coverage
+/.pytest_cache
+/junit.xml
+
+# Project specific
 /dist
-/input.csv
 /output
+/.cache
+
+*.csv
+*.json
+*.png
+
+# Distribution / packaging
+/dist

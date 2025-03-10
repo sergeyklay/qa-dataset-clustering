@@ -1,279 +1,165 @@
-#!/usr/bin/env python3
-"""Command-line interface for the QA dataset clustering toolkit.
-
-This module provides a command-line interface for clustering QA datasets,
-benchmarking clustering results, and generating reports. It handles command-line
-arguments, environment configuration, and execution of the appropriate toolkit
-functionality based on user commands.
+"""
+Command-line interface for QA Dataset Clustering.
 """
 
-import logging
+import argparse
 import os
-import signal
-from pathlib import Path
+import sys
+from typing import List, Optional
 
-import click
-from dotenv import load_dotenv
+import matplotlib.pyplot as plt
 
-from qadst import ClusterBenchmarker, HDBSCANQAClusterer, __copyright__, __version__
-from qadst.embeddings import EmbeddingsProvider, get_embeddings_model
-
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+from qadst.clustering import (
+    DirichletProcess,
+    EmbeddingCache,
+    PitmanYorProcess,
 )
-logger = logging.getLogger(__name__)
+from qadst.clustering.utils import (
+    load_data_from_csv,
+    plot_cluster_distribution,
+    save_clusters_to_csv,
+    save_clusters_to_json,
+)
+from qadst.logging import get_logger, setup_logging
 
-# Set up paths
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-OUTPUT_DIR = BASE_DIR / "output"
-
-# Load environment variables
-env_file = BASE_DIR / ".env"
-if env_file.exists():
-    load_dotenv(dotenv_path=env_file)
-else:
-    logger.warning(f"No .env file found at {env_file}")
-    load_dotenv()
+logger = get_logger(__name__)
 
 
-def create_embeddings_provider(embedding_model_name, output_dir):
-    """Create an EmbeddingsProvider instance.
+def main(args: Optional[List[str]] = None) -> int:
+    """
+    Main entry point for the CLI.
 
     Args:
-        embedding_model_name: Name of the embedding model to use
-        output_dir: Directory to save cached embeddings
+        args: Command line arguments (uses sys.argv if None)
 
     Returns:
-        An EmbeddingsProvider instance
+        Exit code (0 for success, non-zero for errors)
     """
-    try:
-        embeddings_model = get_embeddings_model(model_name=embedding_model_name)
-        return EmbeddingsProvider(model=embeddings_model, output_dir=output_dir)
-    except Exception as e:
-        logger.error(f"Failed to initialize embeddings model: {e}")
-        raise click.UsageError(f"Failed to initialize embeddings model: {e}")
+    # Set up logging
+    setup_logging()
 
-
-def common_options(func):
-    """Common options for all commands."""
-    func = click.option(
+    parser = argparse.ArgumentParser(
+        description="Text clustering using Dirichlet Process and Pitman-Yor Process"
+    )
+    parser.add_argument("--input", required=True, help="Path to input CSV file")
+    parser.add_argument(
+        "--column",
+        default="question",
+        help="Column name to use for clustering (default: question)",
+    )
+    parser.add_argument(
+        "--output", default="clusters_output.csv", help="Output CSV file path"
+    )
+    parser.add_argument(
         "--output-dir",
-        type=click.Path(exists=True, file_okay=False, dir_okay=True),
-        default=str(OUTPUT_DIR),
-        help="Directory to save output files (default: ./output)",
-    )(func)
-    func = click.option(
-        "--llm-model",
-        type=str,
-        default=os.getenv("OPENAI_MODEL", "gpt-4o"),
-        help="LLM model to use (default: gpt-4o or OPENAI_MODEL env var)",
-    )(func)
-    func = click.option(
-        "--embedding-model",
-        type=str,
-        default=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
-        help="Embedding model to use (default: text-embedding-3-large or "
-        "OPENAI_EMBEDDING_MODEL env var)",
-    )(func)
-    return func
-
-
-@click.group()
-@click.version_option(
-    version=__version__,
-    prog_name="qadst",
-    message=f"""%(prog)s %(version)s
-{__copyright__}
-This is free software; see the source for copying conditions.  There is NO
-warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.""",
-)
-def cli():
-    """QA Dataset Toolkit for clustering and benchmarking."""
-    pass
-
-
-@cli.command("cluster")
-@common_options
-@click.option(
-    "--input",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False),
-    help="Path to the input CSV file containing QA pairs",
-)
-@click.option(
-    "--filter/--no-filter",
-    default=True,
-    help="Filter out engineering-focused questions",
-)
-@click.option(
-    "--min-cluster-size",
-    type=int,
-    default=None,
-    help="Minimum size of clusters (if not provided, calculated automatically)",
-)
-@click.option(
-    "--min-samples",
-    type=int,
-    default=None,
-    help="HDBSCAN min_samples parameter (default: 5)",
-)
-@click.option(
-    "--cluster-selection-epsilon",
-    type=float,
-    default=None,
-    help="HDBSCAN cluster_selection_epsilon parameter (default: 0.3)",
-)
-@click.option(
-    "--keep-noise/--cluster-noise",
-    default=False,
-    help="Keep noise points unclustered (default: False, noise points are clustered)",
-)
-@click.option(
-    "--cluster-selection-method",
-    type=click.Choice(["eom", "leaf"]),
-    default="eom",
-    help="HDBSCAN cluster selection method (default: eom)",
-)
-def cluster_command(
-    output_dir,
-    llm_model,
-    embedding_model,
-    input,
-    filter,
-    min_cluster_size,
-    min_samples,
-    cluster_selection_epsilon,
-    keep_noise,
-    cluster_selection_method,
-):
-    """Cluster QA pairs using HDBSCAN algorithm."""
-    logger.info("Starting QA dataset clustering process")
-    if not input:
-        raise click.UsageError("Input CSV file is required")
-
-    # Handle Ctrl+C gracefully
-    signal.signal(signal.SIGINT, lambda sig, frame: exit(0))
-
-    # Check if OpenAI API key is set
-    if filter and not os.getenv("OPENAI_API_KEY"):
-        logger.warning("OPENAI_API_KEY not set, disabling filtering")
-        filter = False
-
-    # Create embeddings provider
-    embeddings_provider = create_embeddings_provider(embedding_model, output_dir)
-
-    # Create clusterer with the embeddings provider
-    clusterer = HDBSCANQAClusterer(
-        embeddings_provider=embeddings_provider,
-        llm_model_name=llm_model if filter else None,
-        output_dir=output_dir,
-        filter_enabled=filter,
-        min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-        cluster_selection_epsilon=cluster_selection_epsilon,
-        keep_noise=keep_noise,
-        cluster_selection_method=cluster_selection_method,
+        default="output",
+        help="Directory to save output files (default: output)",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=1.0,
+        help="Concentration parameter (default: 1.0)",
+    )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=0.5,
+        help="Discount parameter for Pitman-Yor (default: 0.5)",
+    )
+    parser.add_argument(
+        "--plot", action="store_true", help="Generate cluster distribution plot"
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=".cache",
+        help="Directory to cache embeddings (default: .cache)",
     )
 
-    logger.info(f"Processing dataset from {input}")
-    logger.info(f"Using embedding model: {embedding_model}")
-    if filter:
-        logger.info(f"Using LLM model for filtering: {llm_model}")
+    parsed_args = parser.parse_args(args)
 
-    result = clusterer.process_dataset(str(input))
+    try:
+        os.makedirs(parsed_args.cache_dir, exist_ok=True)
+        os.makedirs(parsed_args.output_dir, exist_ok=True)
 
-    logger.info("Clustering complete")
-    logger.info(f"Original QA pairs: {result['original_count']}")
-    logger.info(f"Deduplicated QA pairs: {result['deduplicated_count']}")
-    if "filtered_count" in result:
-        logger.info(f"After filtering: {result['filtered_count']}")
-    logger.info(f"Number of clusters: {result['num_clusters']}")
-    logger.debug(f"Clusters JSON saved to: {result['json_output_path']}")
-    logger.debug(f"Cleaned CSV saved to: {result['csv_output_path']}")
+        input_file = parsed_args.input
+        column_name = parsed_args.column
+        logger.info(f"Loading data from {input_file}, using column '{column_name}'...")
 
+        texts, data = load_data_from_csv(input_file, column_name)
+        if not texts:
+            logger.error(
+                f"No data found in column '{column_name}'. Please check your CSV file."
+            )
+            return 1
+        logger.info(f"Loaded {len(texts)} texts for clustering")
 
-@cli.command("benchmark")
-@common_options
-@click.option(
-    "--clusters",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False),
-    help="Path to the JSON file containing clustering results",
-)
-@click.option(
-    "--qa-pairs",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False),
-    help="Path to the CSV file containing QA pairs",
-)
-@click.option(
-    "--use-llm/--no-llm",
-    default=True,
-    help="Use LLM for generating topic labels",
-)
-@click.option(
-    "--reporters",
-    type=str,
-    default="csv,console",
-    help="Comma-separated list of reporters to enable (default: csv,console)",
-)
-def benchmark_command(
-    output_dir, llm_model, embedding_model, clusters, qa_pairs, use_llm, reporters
-):
-    """Benchmark clustering results and generate reports."""
-    if not clusters or not qa_pairs:
-        raise click.UsageError("Both clusters and qa-pairs are required")
+        # Create cache provider
+        cache_provider = EmbeddingCache(cache_dir=parsed_args.cache_dir)
 
-    # Handle Ctrl+C gracefully
-    signal.signal(signal.SIGINT, lambda sig, frame: exit(0))
+        logger.info("Performing Dirichlet Process clustering...")
+        dp = DirichletProcess(
+            alpha=parsed_args.alpha, base_measure=None, cache=cache_provider
+        )
+        clusters_dp, params_dp = dp.fit(texts)
+        logger.info(f"DP clustering complete. Found {len(set(clusters_dp))} clusters")
 
-    # Check if OpenAI API key is set
-    if use_llm and not os.getenv("OPENAI_API_KEY"):
-        logger.warning("OPENAI_API_KEY not set, disabling LLM topic labeling")
-        use_llm = False
+        logger.info("Performing Pitman-Yor Process clustering...")
+        pyp = PitmanYorProcess(
+            alpha=parsed_args.alpha,
+            sigma=parsed_args.sigma,
+            base_measure=None,
+            cache=cache_provider,
+        )
+        clusters_pyp, params_pyp = pyp.fit(texts)
+        logger.info(f"PYP clustering complete. Found {len(set(clusters_pyp))} clusters")
 
-    # Create embeddings provider
-    embeddings_provider = create_embeddings_provider(embedding_model, output_dir)
+        output_basename = os.path.basename(parsed_args.output)
+        dp_output = os.path.join(
+            parsed_args.output_dir, output_basename.replace(".csv", "_dp.csv")
+        )
+        pyp_output = os.path.join(
+            parsed_args.output_dir, output_basename.replace(".csv", "_pyp.csv")
+        )
+        save_clusters_to_csv(dp_output, texts, clusters_dp, "DP")
+        save_clusters_to_csv(pyp_output, texts, clusters_pyp, "PYP")
 
-    # Create benchmarker with the embeddings provider
-    benchmarker = ClusterBenchmarker(
-        embeddings_provider=embeddings_provider,
-        llm_model_name=llm_model if use_llm else None,
-        output_dir=output_dir,
-    )
+        dp_json = os.path.join(
+            parsed_args.output_dir, output_basename.replace(".csv", "_dp.json")
+        )
+        pyp_json = os.path.join(
+            parsed_args.output_dir, output_basename.replace(".csv", "_pyp.json")
+        )
+        save_clusters_to_json(dp_json, texts, clusters_dp, "DP", data)
+        save_clusters_to_json(pyp_json, texts, clusters_pyp, "PYP", data)
 
-    # Configure reporters based on user input
-    enabled_reporters = [r.strip() for r in reporters.split(",") if r.strip()]
+        qa_clusters_path = os.path.join(parsed_args.output_dir, "qa_clusters.json")
+        save_clusters_to_json(qa_clusters_path, texts, clusters_dp, "Combined", data)
+        logger.info(f"Combined clusters saved to {qa_clusters_path}")
 
-    # Disable all reporters first
-    for reporter_name in ["csv", "console"]:
-        benchmarker.reporter_registry.disable(reporter_name)
+        if parsed_args.plot:
+            plt.figure(figsize=(12, 5))
+            plt.subplot(1, 2, 1)
+            plot_cluster_distribution(
+                clusters_dp, "Dirichlet Process Cluster Sizes", "blue"
+            )
+            plt.subplot(1, 2, 2)
+            plot_cluster_distribution(
+                clusters_pyp, "Pitman-Yor Process Cluster Sizes", "red"
+            )
+            plt.tight_layout()
+            plot_path = os.path.join(
+                parsed_args.output_dir, output_basename.replace(".csv", "_clusters.png")
+            )
+            plt.savefig(plot_path)
+            logger.info(f"Cluster distribution plot saved to {plot_path}")
+            plt.show()
 
-    # Enable only the requested reporters
-    for reporter_name in enabled_reporters:
-        if reporter_name in ["csv", "console"]:
-            benchmarker.reporter_registry.enable(reporter_name)
-        else:
-            logger.warning(f"Unknown reporter: {reporter_name}")
-
-    # Generate report
-    logger.info(f"Analyzing clusters from: {clusters}")
-    logger.info(f"Using QA pairs from: {qa_pairs}")
-    logger.info(f"Using embedding model: {embedding_model}")
-    logger.info(f"LLM topic labeling: {'enabled' if use_llm else 'disabled'}")
-    if use_llm:
-        logger.info(f"Using LLM model: {llm_model}")
-    logger.info(f"Enabled reporters: {', '.join(enabled_reporters)}")
-
-    # Generate the report - the reporters will handle the output
-    benchmarker.generate_cluster_report(
-        clusters_json_path=clusters,
-        qa_csv_path=qa_pairs,
-        use_llm_for_topics=use_llm,
-    )
+        return 0
+    except Exception as e:
+        logger.exception(f"Error: {e}")
+        return 1
 
 
-def main():
-    """Entry point for the CLI."""
-    cli()
+if __name__ == "__main__":
+    sys.exit(main())
