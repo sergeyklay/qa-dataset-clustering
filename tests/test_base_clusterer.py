@@ -55,7 +55,7 @@ def test_calculate_deterministic_hash(mock_base_clusterer):
 
 def test_deterministic_hash_consistency():
     """Test that the hash function produces consistent results."""
-    with patch("qadst.base.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
+    with patch("qadst.embeddings.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
         clusterer = FakeClusterer(
             embedding_model_name="test-model",
             output_dir=tempfile.mkdtemp(),
@@ -79,7 +79,7 @@ def test_deterministic_hash_consistency():
 
 def test_deterministic_hash_order_independence():
     """Test that the hash function is order-independent."""
-    with patch("qadst.base.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
+    with patch("qadst.embeddings.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
         clusterer = FakeClusterer(
             embedding_model_name="test-model",
             output_dir=tempfile.mkdtemp(),
@@ -101,7 +101,7 @@ def test_deterministic_hash_order_independence():
 
 def test_deterministic_hash_different_inputs():
     """Test that the hash function produces different results for different inputs."""
-    with patch("qadst.base.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
+    with patch("qadst.embeddings.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
         clusterer = FakeClusterer(
             embedding_model_name="test-model",
             output_dir=tempfile.mkdtemp(),
@@ -120,7 +120,7 @@ def test_deterministic_hash_different_inputs():
 
 def test_load_qa_pairs(temp_csv_file):
     """Test the load_qa_pairs method."""
-    with patch("qadst.base.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
+    with patch("qadst.embeddings.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
         clusterer = FakeClusterer(
             embedding_model_name="test-model",
             output_dir=tempfile.mkdtemp(),
@@ -233,7 +233,7 @@ class FilterClusterer(FakeClusterer):
 def test_filter_clusterer():
     """Return a TestFilterClusterer for testing."""
     with (
-        patch("qadst.base.OpenAIEmbeddings"),
+        patch("qadst.embeddings.OpenAIEmbeddings"),
         patch("qadst.base.ChatOpenAI"),
         patch("builtins.open", create=True),
         patch("qadst.filters.PromptTemplate"),

@@ -15,7 +15,7 @@ from qadst.reporters import ConsoleReporter, CSVReporter
 class TestClusterBenchmarker:
     """Tests for the ClusterBenchmarker class."""
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     @patch("qadst.benchmarker.ReporterRegistry")
     def test_init_default_values(
@@ -53,7 +53,7 @@ class TestClusterBenchmarker:
         assert isinstance(args[1], ConsoleReporter)
         assert kwargs.get("enabled", False) is True
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_init_with_models(self, mock_chat_openai, mock_embeddings):
         """Test initialization with model names."""
@@ -75,19 +75,20 @@ class TestClusterBenchmarker:
 
             # Check values
             assert benchmarker.output_dir == temp_dir
-            assert benchmarker.embeddings_model == mock_embeddings_instance
-            assert benchmarker.llm == mock_llm_instance
+            mock_embeddings.assert_called_once()
+            assert (
+                mock_embeddings.call_args.kwargs.get("model")
+                == "text-embedding-3-large"
+            )
 
-            # Verify the embedding model was initialized correctly
-            mock_embeddings.assert_called_once_with(model="text-embedding-3-large")
-
-            # Verify the LLM was initialized correctly
-            mock_chat_openai.assert_called_once_with(model="gpt-4o", temperature=0.0)
+            mock_chat_openai.assert_called_once()
+            assert mock_chat_openai.call_args.kwargs.get("model") == "gpt-4o"
+            assert mock_chat_openai.call_args.kwargs.get("temperature") == 0
 
             # Verify the output directory was created
             assert os.path.exists(temp_dir)
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     @patch("qadst.benchmarker.logger")
     def test_init_with_model_errors(
@@ -114,7 +115,7 @@ class TestClusterBenchmarker:
         )
         mock_logger.warning.assert_any_call("Failed to initialize LLM: LLM error")
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_load_clusters_valid_json(self, mock_chat_openai, mock_embeddings):
         """Test loading clusters from a valid JSON file."""
@@ -162,7 +163,7 @@ class TestClusterBenchmarker:
             if os.path.exists(temp_file_name):
                 os.unlink(temp_file_name)
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_load_clusters_invalid_json(self, mock_chat_openai, mock_embeddings):
         """Test loading clusters from an invalid JSON file."""
@@ -191,7 +192,7 @@ class TestClusterBenchmarker:
             if os.path.exists(temp_file_name):
                 os.unlink(temp_file_name)
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_load_clusters_file_not_found(self, mock_chat_openai, mock_embeddings):
         """Test loading clusters from a non-existent file."""
@@ -208,7 +209,7 @@ class TestClusterBenchmarker:
         except FileNotFoundError:
             pass  # Test passed
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_load_qa_pairs_valid_csv(self, mock_chat_openai, mock_embeddings):
         """Test loading QA pairs from a valid CSV file."""
@@ -250,7 +251,7 @@ class TestClusterBenchmarker:
             if os.path.exists(temp_file_name):
                 os.unlink(temp_file_name)
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_load_qa_pairs_empty_csv(self, mock_chat_openai, mock_embeddings):
         """Test loading QA pairs from an empty CSV file."""
@@ -277,7 +278,7 @@ class TestClusterBenchmarker:
             if os.path.exists(temp_file_name):
                 os.unlink(temp_file_name)
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_load_qa_pairs_malformed_csv(self, mock_chat_openai, mock_embeddings):
         """Test loading QA pairs from a malformed CSV file."""
@@ -316,7 +317,7 @@ class TestClusterBenchmarker:
             if os.path.exists(temp_file_name):
                 os.unlink(temp_file_name)
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_load_qa_pairs_file_not_found(self, mock_chat_openai, mock_embeddings):
         """Test loading QA pairs from a non-existent file."""
@@ -333,10 +334,10 @@ class TestClusterBenchmarker:
         except FileNotFoundError:
             pass  # Test passed
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_extract_embeddings_from_qa_pairs_success(
-        self, mock_chat_openai, mock_embeddings
+        self, mock_chat, mock_openai_embeddings
     ):
         """Test extracting embeddings from QA pairs successfully."""
         # Create test data
@@ -351,7 +352,7 @@ class TestClusterBenchmarker:
 
         # Setup mock embeddings model
         mock_embeddings_instance = MagicMock()
-        mock_embeddings.return_value = mock_embeddings_instance
+        mock_openai_embeddings.return_value = mock_embeddings_instance
 
         # Mock the embed_documents method to return test embeddings
         test_embeddings = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]
@@ -374,10 +375,10 @@ class TestClusterBenchmarker:
             expected_questions
         )
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_extract_embeddings_from_qa_pairs_no_model(
-        self, mock_chat_openai, mock_embeddings
+        self, mock_chat, mock_openai_embeddings
     ):
         """Test extracting embeddings without an embeddings model."""
         # Create test data
@@ -398,17 +399,17 @@ class TestClusterBenchmarker:
             benchmarker.extract_embeddings_from_qa_pairs(test_qa_pairs)
             assert False, "Expected ValueError was not raised"
         except ValueError as e:
-            assert str(e) == "Embeddings model not provided"
+            assert str(e) == "Embedding model name not provided"
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_extract_embeddings_from_qa_pairs_empty_list(
-        self, mock_chat_openai, mock_embeddings
+        self, mock_chat, mock_openai_embeddings
     ):
         """Test extracting embeddings from an empty list of QA pairs."""
         # Setup mock embeddings model
         mock_embeddings_instance = MagicMock()
-        mock_embeddings.return_value = mock_embeddings_instance
+        mock_openai_embeddings.return_value = mock_embeddings_instance
 
         # Mock the embed_documents method to return an empty list
         mock_embeddings_instance.embed_documents.return_value = []
@@ -426,10 +427,10 @@ class TestClusterBenchmarker:
         # Verify the embed_documents method was called with an empty list
         mock_embeddings_instance.embed_documents.assert_called_once_with([])
 
-    @patch("qadst.benchmarker.OpenAIEmbeddings")
+    @patch("qadst.embeddings.OpenAIEmbeddings")
     @patch("qadst.benchmarker.ChatOpenAI")
     def test_extract_embeddings_from_qa_pairs_model_error(
-        self, mock_chat_openai, mock_embeddings
+        self, mock_chat, mock_openai_embeddings
     ):
         """Test handling errors from the embeddings model."""
         # Create test data
@@ -443,7 +444,7 @@ class TestClusterBenchmarker:
 
         # Setup mock embeddings model
         mock_embeddings_instance = MagicMock()
-        mock_embeddings.return_value = mock_embeddings_instance
+        mock_openai_embeddings.return_value = mock_embeddings_instance
 
         # Mock the embed_documents method to raise an exception
         mock_embeddings_instance.embed_documents.side_effect = Exception(

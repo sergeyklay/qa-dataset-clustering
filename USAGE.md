@@ -104,6 +104,17 @@ This command:
 3. Generates topic labels for each cluster (using LLM if `--use-llm` is enabled)
 4. Creates reports in the output directory
 
+> **Important**: Always use the same embedding model for benchmarking that you used for clustering.
+> For example, if you clustered with SBERT, use the same SBERT model for benchmarking:
+> ```bash
+> # Clustering with SBERT
+> qadst cluster --input data/qa_pairs.csv --embedding-model sbert
+>
+> # Benchmarking with the SAME model
+> qadst benchmark --clusters output/qa_clusters.json --qa-pairs data/qa_pairs.csv --embedding-model sbert
+> ```
+> Using different embedding models between clustering and benchmarking will lead to inconsistent results.
+
 ### Understanding Output Files
 
 The toolkit generates several output files:
@@ -209,11 +220,41 @@ qadst cluster --input data/qa_pairs.csv --embedding-model text-embedding-3-small
 
 The toolkit supports any embedding model available through the OpenAI API.
 
+#### Using Sentence-BERT (SBERT) Models
+
+qadst also supports local Sentence-BERT models, which don't require an API key and run entirely on your machine:
+
+```bash
+# Use the default SBERT model (all-MiniLM-L6-v2)
+qadst cluster --input data/qa_pairs.csv --embedding-model sbert
+
+# Use a specific SBERT model
+qadst cluster --input data/qa_pairs.csv --embedding-model "sbert:all-mpnet-base-v2"
+```
+
+Benefits of SBERT models:
+- **No API key required**: Run entirely locally
+- **Lower dimensionality**: SBERT models like all-MiniLM-L6-v2 produce 384-dimensional vectors (vs. 3072 for OpenAI)
+- **Faster processing**: Local execution can be faster for smaller datasets
+- **Cost-effective**: No usage charges
+
+To use SBERT models, you need to install the optional dependency:
+```bash
+poetry add sentence-transformers
+```
+
+> **Note**: When using SBERT for clustering, make sure to use the same SBERT model for benchmarking:
+> ```bash
+> # Benchmarking with the same SBERT model
+> qadst benchmark --clusters output/qa_clusters.json --qa-pairs data/qa_pairs.csv --embedding-model sbert
+> ```
+
 #### Model Selection Considerations
 
 - **Quality vs. Speed**: Larger models provide better semantic understanding but may be slower and more expensive
 - **Dimensionality**: Different models produce embeddings with different dimensions
 - **Domain Specificity**: Some models may perform better for specific domains or languages
+- **Local vs. API**: SBERT models run locally but may have lower quality than OpenAI models
 
 ### Embedding Caching
 
@@ -374,23 +415,29 @@ For developers who want to use qadst programmatically, refer to the class docume
 - `BaseReporter`, `CSVReporter`, `ConsoleReporter`: Reporting system
 
 Example programmatic usage:
+
 ```python
 from qadst import HDBSCANQAClusterer, ClusterBenchmarker
 
-# Create a clusterer
+# Choose your embedding model - use the same for both clustering and benchmarking
+embedding_model = "sbert"  # or "text-embedding-3-large", etc.
+
+# Create a clusterer with the chosen model
 clusterer = HDBSCANQAClusterer(
-    embedding_model_name="text-embedding-3-large",
+    embedding_model_name=embedding_model,
     output_dir="./output"
 )
 
 # Process a dataset
 results = clusterer.process_dataset("data/qa_pairs.csv")
 
-# Benchmark the results
+# Create a benchmarker with the SAME model
 benchmarker = ClusterBenchmarker(
-    embedding_model_name="text-embedding-3-large",
+    embedding_model_name=embedding_model,  # Use the same model as for clustering
     output_dir="./output"
 )
+
+# Generate the report
 report = benchmarker.generate_cluster_report(
     clusters_json_path="output/qa_clusters.json",
     qa_csv_path="data/qa_pairs.csv",

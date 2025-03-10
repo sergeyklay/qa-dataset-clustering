@@ -29,6 +29,16 @@ poetry install
 
 This will create a virtual environment and install all required dependencies.
 
+#### Optional Dependencies
+
+For local embedding models (SBERT):
+
+```bash
+poetry add sentence-transformers
+```
+
+This allows you to use Sentence-BERT models locally without requiring an OpenAI API key for embeddings.
+
 ### 3. Configure Environment Variables
 
 Create a `.env` file from the template:
@@ -72,5 +82,6 @@ This will install additional tools for testing, linting, and documentation.
 - **Poetry not found**: Ensure Poetry is installed and in your PATH
 - **Python version mismatch**: Verify you have Python 3.10+ installed
 - **Dependency conflicts**: Try `poetry update` to resolve dependency issues
+- **Missing sentence-transformers**: If you want to use SBERT embeddings, make sure to install the optional dependency with `poetry add sentence-transformers`
 
 If you encounter any other installation issues, please check the GitHub repository for known issues or open a new issue with details about your environment and the error messages you're seeing.

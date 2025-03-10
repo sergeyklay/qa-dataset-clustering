@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from langchain.prompts import PromptTemplate
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from sklearn.decomposition import NMF
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import (
@@ -23,6 +23,7 @@ from sklearn.metrics import (
     silhouette_score,
 )
 
+from .embeddings import get_embeddings_model
 from .reporters import (
     ConsoleReporter,
     CSVReporter,
@@ -66,10 +67,11 @@ class ClusterBenchmarker:
             llm_model_name: Name of the LLM model to use for topic labeling
             output_dir: Directory to save output files
         """
+        self.embedding_model_name = embedding_model_name
         self.embeddings_model = None
         if embedding_model_name:
             try:
-                self.embeddings_model = OpenAIEmbeddings(model=embedding_model_name)
+                self.embeddings_model = get_embeddings_model(embedding_model_name)
                 logger.info(f"Initialized embeddings model: {embedding_model_name}")
             except Exception as e:
                 logger.warning(f"Failed to initialize embeddings model: {e}")
@@ -133,8 +135,21 @@ class ClusterBenchmarker:
         Returns:
             Array of embeddings for the questions
         """
+        # Initialize embeddings model if not already initialized
         if self.embeddings_model is None:
-            raise ValueError("Embeddings model not provided")
+            if self.embedding_model_name:
+                try:
+                    self.embeddings_model = get_embeddings_model(
+                        self.embedding_model_name
+                    )
+                    logger.info(
+                        f"Initialized embeddings model: {self.embedding_model_name}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to initialize embeddings model: {e}")
+                    raise ValueError(f"Failed to initialize embeddings model: {e}")
+            else:
+                raise ValueError("Embedding model name not provided")
 
         questions = [q for q, _ in qa_pairs]
         return np.array(self.embeddings_model.embed_documents(questions))

@@ -10,8 +10,9 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 
+from .embeddings import get_embeddings_model
 from .filters import ProductDevelopmentFilter
 
 logger = logging.getLogger(__name__)
@@ -72,11 +73,8 @@ class BaseClusterer(ABC):
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Initialize embedding model
-        self.embeddings_model = OpenAIEmbeddings(
-            model=embedding_model_name,
-            chunk_size=1000,
-        )
+        # Initialize embedding model using the factory function
+        self.embeddings_model = get_embeddings_model(embedding_model_name)
 
         # Initialize LLM if provided
         self.llm = None
@@ -452,6 +450,7 @@ class BaseClusterer(ABC):
         logger.info(f"Processing time: {time.time()-start:.2f}s")
         return result
 
+    # Move this to embeddings.py
     def get_embeddings(
         self, questions: List[str], cache_key: Optional[str] = None
     ) -> List[np.ndarray]:

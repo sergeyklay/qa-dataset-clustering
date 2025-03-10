@@ -126,7 +126,13 @@ class HDBSCANQAClusterer(BaseClusterer):
 
         # Use cached embeddings if available
         questions_hash = self._calculate_deterministic_hash(questions)
-        cache_key = f"cluster_{self.embedding_model_name}_{questions_hash}"
+        # Sanitize model name to be safe for use in a filename
+        safe_model_name = (
+            self.embedding_model_name.replace("/", "_")
+            .replace(":", "_")
+            .replace(" ", "_")
+        )
+        cache_key = f"cluster_{safe_model_name}_{questions_hash}"
         question_embeddings = self.get_embeddings(questions, cache_key)
 
         # Convert to numpy array for HDBSCAN
@@ -468,8 +474,18 @@ class HDBSCANQAClusterer(BaseClusterer):
             questions = cluster_data["questions"]
             qa_pairs = cluster_data["qa_pairs"]
 
+            # Use cached embeddings if available
+            questions_hash = self._calculate_deterministic_hash(questions)
+            # Sanitize model name to be safe for use in a filename
+            safe_model_name = (
+                self.embedding_model_name.replace("/", "_")
+                .replace(":", "_")
+                .replace(" ", "_")
+            )
+            cache_key = f"large_cluster_{safe_model_name}_{questions_hash}"
+
             # Get embeddings for the questions
-            question_embeddings = self.get_embeddings(questions)
+            question_embeddings = self.get_embeddings(questions, cache_key)
             embeddings_array = np.array(question_embeddings)
 
             # Apply recursive clustering

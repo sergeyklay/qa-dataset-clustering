@@ -60,7 +60,7 @@ def mock_embeddings() -> List[np.ndarray]:
 @pytest.fixture
 def mock_base_clusterer():
     """Return a mock BaseClusterer for testing."""
-    with patch("qadst.base.OpenAIEmbeddings"), patch("qadst.base.ChatOpenAI"):
+    with patch("qadst.embeddings.get_embeddings_model"), patch("qadst.base.ChatOpenAI"):
         clusterer = FakeClusterer(
             embedding_model_name="test-model",
             output_dir=tempfile.mkdtemp(),
@@ -83,7 +83,7 @@ def mock_base_clusterer():
 def mock_filter_clusterer():
     """Return a mock BaseClusterer with LLM for testing filtering."""
     with (
-        patch("qadst.base.OpenAIEmbeddings"),
+        patch("qadst.embeddings.get_embeddings_model"),
         patch("qadst.base.ChatOpenAI"),
         patch("qadst.base.PromptTemplate"),
         patch("qadst.base.os.path.exists", return_value=True),
@@ -141,7 +141,7 @@ def mock_hdbscan_clusterer():
     """Return a mock HDBSCANQAClusterer for testing."""
     with (
         patch("qadst.clusterer.HDBSCAN"),
-        patch("qadst.base.OpenAIEmbeddings"),
+        patch("qadst.embeddings.get_embeddings_model"),
         patch("qadst.base.ChatOpenAI"),
     ):
         clusterer = HDBSCANQAClusterer(
@@ -149,15 +149,16 @@ def mock_hdbscan_clusterer():
             output_dir=tempfile.mkdtemp(),
         )
 
-        # Mock the embeddings_model.embed_documents method
-        clusterer.embeddings_model = MagicMock()
-        clusterer.embeddings_model.embed_documents.return_value = [
-            [0.9, 0.1, 0.1],  # Password reset
-            [0.85, 0.15, 0.1],  # Password change (similar to first)
-            [0.1, 0.9, 0.1],  # Payment methods
-            [0.15, 0.85, 0.1],  # Bitcoin (similar to payment)
-            [0.1, 0.1, 0.9],  # Support contact (unique)
-        ]
+        # Mock the get_embeddings method
+        clusterer.get_embeddings = MagicMock(
+            return_value=[
+                [0.9, 0.1, 0.1],  # Password reset
+                [0.85, 0.15, 0.1],  # Password change (similar to first)
+                [0.1, 0.9, 0.1],  # Payment methods
+                [0.15, 0.85, 0.1],  # Bitcoin (similar to payment)
+                [0.1, 0.1, 0.9],  # Support contact (unique)
+            ]
+        )
 
         yield clusterer
 

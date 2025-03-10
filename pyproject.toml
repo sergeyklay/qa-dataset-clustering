@@ -41,6 +41,7 @@ numpy = "^2.2.3"
 pandas = "^2.2.3"
 python-dotenv = "^1.0.1"
 scikit-learn = "^1.6.1"
+sentence-transformers = "^3.4.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
