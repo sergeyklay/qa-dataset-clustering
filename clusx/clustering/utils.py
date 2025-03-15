@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -28,6 +29,42 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def is_csv_file(input_file: str) -> bool:
+    """
+    Determine if a file is a CSV file based on extension and content.
+
+    Args:
+        input_file: Path to the input file
+
+    Returns:
+        bool: True if the file is likely a CSV, False otherwise
+    """
+    # First check file extension
+    if input_file.lower().endswith(".csv"):
+        return True
+
+    # For files without .csv extension, try to detect CSV format
+    is_csv = False
+    try:
+        with open(input_file, "r", encoding="utf-8") as f:
+            # Read a sample of the file to determine if it's CSV
+            sample = f.read(4096)  # Read a reasonable sample size
+            if sample:  # Check if we got any content
+                # Try to detect CSV with Sniffer
+                try:
+                    dialect = csv.Sniffer().sniff(sample)
+                    if dialect.delimiter in [",", ";", "\t"]:
+                        is_csv = True
+                except csv.Error:
+                    # Not a CSV according to the sniffer
+                    pass
+    except OSError:
+        # Handle file access errors
+        logger.warning("Error accessing file %s", input_file)
+
+    return is_csv
+
+
 def load_data(input_file: str, column: Optional[str] = None) -> list[str]:
     """
     Load text data from a file. Supports text files and CSV files.
@@ -43,32 +80,20 @@ def load_data(input_file: str, column: Optional[str] = None) -> list[str]:
         ValueError: If a CSV file is provided without specifying a column
     """
     texts = []
-
-    # Check if the file is a CSV by trying to parse it
-    is_csv = False
-    try:
-        with open(input_file, "r", encoding="utf-8") as f:
-            # Read the first line and check if it contains a comma
-            first_line = f.readline().strip()
-            if "," in first_line:
-                # Try to parse as CSV
-                sniffer = csv.Sniffer()
-                # Just check if it can be parsed as CSV, don't need the dialect
-                sniffer.sniff(first_line)
-                is_csv = True
-    except (OSError, csv.Error):
-        # If any error occurs, assume it's a text file
-        is_csv = False
-
-    if is_csv:
+    if is_csv_file(input_file):
         if column is None:
             raise ValueError("Column name must be specified when using a CSV file")
 
-        with open(input_file, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if column in row and row[column].strip():
-                    texts.append(row[column])
+        df = pd.read_csv(input_file)
+        if column in df.columns:
+            texts = df[column].tolist()
+        else:
+            logger.warning(
+                "Column '%s' not found in CSV. Available columns: %s",
+                column,
+                ", ".join(df.columns),
+            )
+            raise ValueError(f"Column '{column}' not found in the CSV file")
     else:
         # Process as a text file (one text per line)
         with open(input_file, "r", encoding="utf-8") as f:
@@ -85,9 +110,9 @@ def save_clusters_to_csv(
     texts: list[str],
     clusters: list[int],
     model_name: str,
-    alpha: float = 1.0,
-    sigma: float = 0.0,
-    variance: float = 0.1,
+    alpha: float,
+    sigma: float,
+    kappa: float,
 ) -> None:
     """
     Save clustering results to a CSV file.
@@ -97,16 +122,21 @@ def save_clusters_to_csv(
         texts: List of text strings
         clusters: List of cluster assignments
         model_name: Name of the clustering model
-        alpha: Concentration parameter (default: 1.0)
-        sigma: Discount parameter (default: 0.0)
-        variance: Variance parameter for likelihood model (default: 0.1)
+        alpha: Concentration parameter
+        sigma: Discount parameter
+        kappa: Kappa parameter for likelihood model
     """
-    with open(output_file, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        # Add parameters as metadata in the header
-        writer.writerow(["Text", f"Cluster_{model_name}", "Alpha", "Sigma", "Variance"])
-        for text, cluster in zip(texts, clusters):
-            writer.writerow([text, cluster, alpha, sigma, variance])
+    df = pd.DataFrame(
+        {
+            "Text": texts,
+            f"Cluster_{model_name}": clusters,
+            "Alpha": [alpha] * len(texts),
+            "Sigma": [sigma] * len(texts),
+            "Kappa": [kappa] * len(texts),
+        }
+    )
+
+    df.to_csv(output_file, index=False, encoding="utf-8", quoting=csv.QUOTE_MINIMAL)
     logger.debug("Clustering results saved to %s", output_file)
 
 
@@ -115,9 +145,9 @@ def save_clusters_to_json(
     texts: list[str],
     clusters: list[int],
     model_name: str,
-    alpha: float = 1.0,
-    sigma: float = 0.0,
-    variance: float = 0.1,
+    alpha: float,
+    sigma: float,
+    kappa: float,
 ) -> None:
     """
     Save clustering results to a JSON file.
@@ -127,16 +157,13 @@ def save_clusters_to_json(
         texts: List of text strings
         clusters: List of cluster assignments
         model_name: Name of the clustering model
-        alpha: Concentration parameter (default: 1.0)
-        sigma: Discount parameter (default: 0.0)
-        variance: Variance parameter for likelihood model (default: 0.1)
+        alpha: Concentration parameter
+        sigma: Discount parameter
+        kappa: Kappa parameter for likelihood model
     """
-    cluster_groups = {}
-
     # Group texts by cluster
-    for text, cluster_id in zip(texts, clusters):
-        if cluster_id not in cluster_groups:
-            cluster_groups[cluster_id] = []
+    cluster_groups = defaultdict(list)
+    for text, cluster_id in zip(texts or [], clusters or []):
         cluster_groups[cluster_id].append(text)
 
     clusters_json = {
@@ -145,7 +172,7 @@ def save_clusters_to_json(
             "model_name": model_name,
             "alpha": alpha,
             "sigma": sigma,
-            "variance": variance,
+            "kappa": kappa,
         },
     }
 
@@ -180,8 +207,9 @@ def get_embeddings(texts: list[str]) -> np.ndarray:
 
     from clusx.clustering import DirichletProcess
 
+    # TODO: Extract embedding generation to a separate function/class
     # Use default parameters for embedding generation only
-    dp = DirichletProcess(alpha=1.0)
+    dp = DirichletProcess(alpha=1.0, kappa=1.0)
     embeddings = []
 
     # Process texts with progress bar
@@ -208,8 +236,8 @@ def load_cluster_assignments(csv_path: str) -> tuple[list[int], dict[str, float]
 
     Returns:
         tuple[list[int], dict[str, float]]: A tuple containing:
-            - List of cluster assignments (clusterized texts)
-            - Dictionary of parameters (alpha, sigma, variance)
+            - List of cluster assignments (clustered texts)
+            - Dictionary of parameters (alpha, sigma, kappa)
 
     Raises:
         MissingClusterColumnError: If no cluster column is found in the file
@@ -239,12 +267,12 @@ def load_cluster_assignments(csv_path: str) -> tuple[list[int], dict[str, float]
     if "Sigma" in df.columns:
         params["sigma"] = float(df["Sigma"].iloc[0])
 
-    if "Variance" in df.columns:
-        params["variance"] = float(df["Variance"].iloc[0])
+    if "Kappa" in df.columns:
+        params["kappa"] = float(df["Kappa"].iloc[0])
 
     missing_params = [
         key
-        for key in ["alpha", "sigma", "variance"]
+        for key in ["alpha", "sigma", "kappa"]
         if key not in params or params[key] is None
     ]
     if missing_params:
@@ -261,20 +289,24 @@ def load_parameters_from_json(json_path: str) -> dict[str, float]:
         json_path: Path to the JSON file containing clustering results
 
     Returns:
-        dict[str, float]: A dictionary of parameters (alpha, sigma)
+        dict[str, float]: A dictionary of parameters (alpha, sigma, kappa)
     """
-    params = {"alpha": 1.0, "sigma": 0.0}  # Default values
+    # TODO: Do I really need defaults?
+    params = {"alpha": 1.0, "sigma": 0.0, "kappa": 1.0}  # Default values
 
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        # TODO: Should I throw an error if metadata or its keys are missing?
         # Check if metadata is available in the JSON
         if "metadata" in data:
             if "alpha" in data["metadata"]:
                 params["alpha"] = float(data["metadata"]["alpha"])
             if "sigma" in data["metadata"]:
                 params["sigma"] = float(data["metadata"]["sigma"])
+            if "kappa" in data["metadata"]:
+                params["kappa"] = float(data["metadata"]["kappa"])
     except (OSError, json.JSONDecodeError) as err:
         logger.error("Error loading parameters from JSON: %s", err)
 

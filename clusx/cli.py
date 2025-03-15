@@ -115,6 +115,13 @@ def cli():
     ),
 )
 @click.option(
+    "--dp-kappa",
+    default=0.3,
+    show_default=True,
+    type=float,
+    help="Kappa parameter for Dirichlet likelihood model",
+)
+@click.option(
     "--pyp-alpha",
     default=0.3,
     show_default=True,
@@ -125,6 +132,13 @@ def cli():
     ),
 )
 @click.option(
+    "--pyp-kappa",
+    default=0.3,
+    show_default=True,
+    type=float,
+    help="Kappa parameter for Pitman-Yor likelihood model",
+)
+@click.option(
     "--pyp-sigma",
     default=0.3,
     show_default=True,
@@ -133,13 +147,6 @@ def cli():
         "Discount parameter for Pitman-Yor Process (0.0 ≤ σ < 1.0). "
         "PYP uses both α and σ parameters."
     ),
-)
-@click.option(
-    "--variance",
-    default=0.3,
-    show_default=True,
-    type=float,
-    help="Variance parameter for likelihood model",
 )
 @click.option(
     "--random-seed",
@@ -158,12 +165,13 @@ def cluster(
     output: str,
     output_dir: str,
     dp_alpha: float,
+    dp_kappa: float,
     pyp_alpha: float,
+    pyp_kappa: float,
     pyp_sigma: float,
-    variance: float,
     random_seed: Optional[int],
     column: Optional[str],
-) -> None:
+):
     """Cluster text data using Dirichlet Process and Pitman-Yor Process."""
     from .clustering import (
         DirichletProcess,
@@ -185,30 +193,30 @@ def cluster(
 
         texts = load_data(input_, column)
         _validate_dataset(texts)
-
         logger.info("Loaded %d texts for clustering", len(texts))
-
-        base_measure = {"variance": variance}
 
         logger.info("Performing Dirichlet Process clustering...")
         dp = DirichletProcess(
             alpha=dp_alpha,
-            base_measure=base_measure,
+            kappa=dp_kappa,
             random_state=random_seed,
         )
-        clusters_dp, _ = dp.fit(texts)
-        logger.info("DP clustering complete. Found %d clusters", len(set(clusters_dp)))
+
+        clusters_dp = dp.fit_predict(texts)
+        logger.info(
+            "DP clustering complete. Found %d clusters", len(set(dp.cluster_params))
+        )
 
         logger.info("Performing Pitman-Yor Process clustering...")
         pyp = PitmanYorProcess(
             alpha=pyp_alpha,
+            kappa=pyp_kappa,
             sigma=pyp_sigma,
-            base_measure=base_measure,
             random_state=random_seed,
         )
-        clusters_pyp, _ = pyp.fit(texts)
+        clusters_pyp = pyp.fit_predict(texts)
         logger.info(
-            "PYP clustering complete. Found %d unique clusters", len(set(clusters_pyp))
+            "PYP clustering complete. Found %d clusters", len(set(clusters_pyp))
         )
 
         # Save results
@@ -226,7 +234,7 @@ def cluster(
             "DP",
             alpha=dp_alpha,
             sigma=0.0,
-            variance=variance,
+            kappa=dp_kappa,
         )
         save_clusters_to_csv(
             pyp_output,
@@ -235,7 +243,7 @@ def cluster(
             "PYP",
             alpha=pyp_alpha,
             sigma=pyp_sigma,
-            variance=variance,
+            kappa=pyp_kappa,
         )
 
         # Save JSON files
@@ -250,7 +258,7 @@ def cluster(
             "DP",
             alpha=dp_alpha,
             sigma=0.0,
-            variance=variance,
+            kappa=dp_kappa,
         )
         save_clusters_to_json(
             pyp_json,
@@ -259,10 +267,10 @@ def cluster(
             "PYP",
             alpha=pyp_alpha,
             sigma=pyp_sigma,
-            variance=variance,
+            kappa=pyp_kappa,
         )
     except Exception as err:  # pylint: disable=broad-except
-        logger.error(err)
+        logger.exception(err)  # Unexpected error
         sys.exit(1)
 
 
@@ -320,7 +328,7 @@ def evaluate(
     show_plot: bool,
     random_seed: Optional[int],
     column: Optional[str],
-) -> None:
+):
     """Evaluate clustering results using established metrics."""
     from .clustering.utils import (
         get_embeddings,
@@ -363,7 +371,7 @@ def evaluate(
             "Dirichlet",
             alpha=dp_params["alpha"],
             sigma=dp_params["sigma"],
-            variance=dp_params["variance"],
+            kappa=dp_params["kappa"],
             random_state=random_seed,
         )
         dp_report = dp_evaluator.generate_report()
@@ -377,7 +385,7 @@ def evaluate(
             "Pitman-Yor",
             alpha=pyp_params["alpha"],
             sigma=pyp_params["sigma"],
-            variance=pyp_params["variance"],
+            kappa=pyp_params["kappa"],
             random_state=random_seed,
         )
         pyp_report = pyp_evaluator.generate_report()

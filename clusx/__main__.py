@@ -7,7 +7,7 @@ control to the main CLI function.
 
 import sys
 
-from .cli import main
+from clusx.cli import main
 
 
 def init() -> None:

@@ -45,10 +45,11 @@ def test_cluster_command_with_small_text_file(basic_text_file, tmp_path, monkeyp
 
     output_dir = tmp_path / "output"
     output_dir.mkdir()
+    ns = "clusx.clustering"
 
     with (
-        patch("clusx.clustering.DirichletProcess.fit", return_value=([0, 1, 2], {})),
-        patch("clusx.clustering.PitmanYorProcess.fit", return_value=([0, 1, 2], {})),
+        patch(f"{ns}.DirichletProcess.fit_predict", return_value=[0, 1, 2]),
+        patch(f"{ns}.PitmanYorProcess.fit_predict", return_value=[0, 1, 2]),
     ):
         runner = CliRunner()
         result = runner.invoke(
@@ -74,10 +75,11 @@ def test_cluster_command_with_small_csv_file(basic_qa_csv, tmp_path, monkeypatch
 
     output_dir = tmp_path / "output"
     output_dir.mkdir()
+    ns = "clusx.clustering"
 
     with (
-        patch("clusx.clustering.DirichletProcess.fit", return_value=([0, 1], {})),
-        patch("clusx.clustering.PitmanYorProcess.fit", return_value=([0, 1], {})),
+        patch(f"{ns}.DirichletProcess.fit_predict", return_value=[0, 1]),
+        patch(f"{ns}.PitmanYorProcess.fit_predict", return_value=[0, 1]),
     ):
         runner = CliRunner()
         result = runner.invoke(
@@ -119,7 +121,7 @@ def test_evaluate_command_show_plot_option(basic_text_file, tmp_path, monkeypatc
         patch("clusx.clustering.utils.load_data", return_value=["text1", "text2"]),
         patch(
             "clusx.clustering.utils.load_cluster_assignments",
-            return_value=([0, 1], {"alpha": 0.5, "sigma": 0.0, "variance": 0.3}),
+            return_value=([0, 1], {"alpha": 0.5, "sigma": 0.0, "kappa": 0.3}),
         ),
         patch(
             "clusx.clustering.utils.get_embeddings",

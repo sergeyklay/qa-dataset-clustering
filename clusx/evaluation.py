@@ -115,13 +115,13 @@ class ClusterEvaluator:
     def __init__(
         self,
         texts: list[str],
-        embeddings: numpy.ndarray,
+        embeddings: numpy.ndarray,  # TODO: replace with the uniform type
         cluster_assignments: list[int],
         model_name: str,
-        alpha: float = 1.0,
-        sigma: float = 0.0,
-        variance: float = 0.1,
-        random_state: "Union[int, None]" = None,
+        alpha: float,
+        sigma: float,
+        kappa: float,
+        random_state: Union[int, None] = None,
     ):
         """
         Initialize the cluster evaluator.
@@ -131,9 +131,9 @@ class ClusterEvaluator:
             embeddings: Numpy array of embeddings for each text
             cluster_assignments: List of cluster IDs for each text
             model_name: Name of the clustering model (e.g., "DP", "PYP")
-            alpha: Concentration parameter (default: 1.0)
-            sigma: Discount parameter for Pitman-Yor Process (default: 0.0)
-            variance: Variance parameter for likelihood model (default: 0.1)
+            alpha: Concentration parameter
+            sigma: Discount parameter for Pitman-Yor Process
+            kappa: Kappa parameter for likelihood model
             random_state: Random seed for reproducible evaluation (default: None)
         """
         self.texts = texts
@@ -142,7 +142,7 @@ class ClusterEvaluator:
         self.model_name = model_name
         self.alpha = alpha
         self.sigma = sigma
-        self.variance = variance
+        self.kappa = kappa
         self.random_state = random_state
         self.unique_clusters = sorted(set(cluster_assignments))
 
@@ -524,7 +524,7 @@ class ClusterEvaluator:
             "parameters": {
                 "alpha": self.alpha,
                 "sigma": self.sigma,
-                "variance": self.variance,
+                "kappa": self.kappa,
                 "random_state": self.random_state,
             },
             "cluster_stats": {

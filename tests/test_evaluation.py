@@ -50,7 +50,7 @@ def evaluator_fx(texts_fx, embeddings_fx, cluster_assignments_fx):
         model_name="TestModel",
         alpha=1.0,
         sigma=0.0,
-        variance=0.1,
+        kappa=0.0,
         random_state=42,
     )
 
@@ -87,6 +87,9 @@ def test_silhouette_score_with_only_singletons():
         embeddings=embeddings,
         cluster_assignments=cluster_assignments,
         model_name="SingletonModel",
+        alpha=1.0,
+        sigma=0.0,
+        kappa=0.0,
     )
 
     # Should return 0.0 as there are no valid clusters with ≥2 samples
@@ -108,6 +111,9 @@ def test_silhouette_score_with_fewer_than_two_clusters():
         embeddings=embeddings,
         cluster_assignments=cluster_assignments,
         model_name="SingleClusterModel",
+        alpha=1.0,
+        sigma=0.0,
+        kappa=0.0,
     )
 
     # Should return 0.0 as there's only one cluster
@@ -129,6 +135,9 @@ def test_silhouette_score_with_exception():
         embeddings=embeddings,
         cluster_assignments=cluster_assignments,
         model_name="ExceptionModel",
+        alpha=1.0,
+        sigma=0.0,
+        kappa=0.0,
     )
 
     with patch(
@@ -161,6 +170,9 @@ def test_silhouette_score_with_mixed_valid_and_singleton():
         embeddings=embeddings,
         cluster_assignments=cluster_assignments,
         model_name="MixedModel",
+        alpha=1.0,
+        sigma=0.0,
+        kappa=0.0,
     )
 
     with patch(

@@ -149,7 +149,7 @@ def cluster_assignments_csv(tmp_path):
     csv_path = tmp_path / "cluster_assignments.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["Text", "Cluster_DP", "Alpha", "Sigma", "Variance"])
+        writer.writerow(["Text", "Cluster_DP", "Alpha", "Sigma", "Kappa"])
         writer.writerow(["What is Python?", "0", "1.0", "0.0", "0.1"])
         writer.writerow(["What is TensorFlow?", "1", "1.0", "0.0", "0.1"])
         writer.writerow(["What is PyTorch?", "1", "1.0", "0.0", "0.1"])
@@ -162,7 +162,7 @@ def cluster_assignments_custom_column_csv(tmp_path):
     csv_path = tmp_path / "cluster_assignments_custom.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["Text", "Cluster_Custom", "Alpha", "Sigma", "Variance"])
+        writer.writerow(["Text", "Cluster_Custom", "Alpha", "Sigma", "Kappa"])
         writer.writerow(["What is Python?", "0", "1.0", "0.0", "0.1"])
         writer.writerow(["What is TensorFlow?", "1", "1.0", "0.0", "0.1"])
         writer.writerow(["What is PyTorch?", "1", "1.0", "0.0", "0.1"])

@@ -7,14 +7,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from scipy.spatial.distance import cosine
 from scipy.special import logsumexp
 from sentence_transformers import SentenceTransformer
-from tqdm.auto import tqdm
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Literal, Optional, Union
+    from typing import Any, Optional, Union
 
     import torch
     from numpy.typing import NDArray
@@ -27,424 +24,562 @@ from clusx.utils import to_numpy
 logger = get_logger(__name__)
 
 
+# TODO: Get rid of assert statements, use type checking and raise errors
 class DirichletProcess:
     """
-    Dirichlet Process clustering implementation for text data.
+    DP clustering implementation for text data using von Mises-Fisher distribution.
 
     This implementation uses a Chinese Restaurant Process (CRP) formulation with
-    proper Bayesian inference to cluster text data. It combines the CRP prior with
-    a likelihood model based on multivariate Gaussian distributions in the embedding
-    space.
+    Bayesian inference to cluster text data. It combines the CRP prior with
+    a likelihood model based on von Mises-Fisher distributions in the embedding
+    space, which is particularly suitable for directional data like normalized
+    text embeddings.
+
+    The model uses a concentration parameter alpha to control the propensity to
+    create new clusters, and a precision parameter kappa to control the
+    concentration of points around cluster means in the von Mises-Fisher distribution.
 
     Attributes:
         alpha (float): Concentration parameter for new cluster creation.
             Higher values lead to more clusters.
+        kappa (float): Precision parameter for the von Mises-Fisher distribution.
+            Higher values lead to tighter, more concentrated clusters.
+        model (SentenceTransformer): Sentence transformer model used for text
+            embeddings.
+        random_state (numpy.random.Generator): Random state for reproducibility.
         clusters (list[int]): List of cluster assignments for each processed text.
         cluster_params (dict): Dictionary of cluster parameters for each cluster.
             Contains 'mean' (centroid) and 'count' (number of points).
-        model: Sentence transformer model used for text embeddings.
-        random_state (numpy.random.RandomState): Random state for reproducibility.
+        global_mean (ndarray): Global mean of all document embeddings.
+        next_id (int): Next available cluster ID.
+        embeddings_ (ndarray): Document embeddings after fitting.
+        labels_ (ndarray): Cluster assignments after fitting.
+        text_embeddings (dict): Cache of text to embedding mappings.
+        embedding_dim (Optional[int]): Dimension of the embedding vectors.
     """
 
     def __init__(
         self,
         alpha: float,
-        sigma: float = 0.0,
-        base_measure: Optional[dict] = None,
-        similarity_metric: Optional[
-            Callable[[EmbeddingTensor, EmbeddingTensor], float]
-        ] = None,
+        kappa: float,
+        model_name: Optional[str] = "all-MiniLM-L6-v2",
         random_state: Optional[int] = None,
     ):
         """
-        Initialize a Dirichlet Process clustering model.
+        Initialize a Dirichlet Process model with von Mises-Fisher likelihood.
 
         Args:
             alpha (float): Concentration parameter for new cluster creation.
                 Higher values lead to more clusters.
-            sigma (float): Discount parameter. Set to 0.0 and not used for Dirichlet
-                Process, but declared to allow proper inheritance by Pitman-Yor
-                Process.
-            base_measure (Optional[dict]): Base measure parameters for the DP.
-                Should contain 'variance' key for the likelihood model.
-            similarity_metric (Optional[Callable]): Function to compute similarity
-                between embeddings. If None, uses cosine_similarity.
+            kappa (float): Precision parameter for the von Mises-Fisher distribution.
+                Higher values lead to tighter, more concentrated clusters.
+            model_name (Optional[str]): Name of the sentence transformer model to use.
+                Defaults to "all-MiniLM-L6-v2".
             random_state (Optional[int]): Random seed for reproducibility.
                 If None, then fresh, unpredictable entropy will be pulled from the OS.
-
-        Raises:
-            TypeError: If base_measure is not a dict or does not contain 'variance' key.
         """
         self.alpha = alpha
-        _ = sigma  # Help linters understand that sigma is not used in this class
-
-        self.clusters: list[int] = []
-        self.cluster_params: dict[int, dict] = {}
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.similarity_metric = (
-            similarity_metric if similarity_metric else self.cosine_similarity
-        )
-        self.embedding_dim = None  # Will be set on first embedding
+        self.kappa = kappa
+        self.model = SentenceTransformer(model_name or "all-MiniLM-L6-v2")
 
         # For reproducibility
         self.random_state = np.random.default_rng(seed=random_state)
 
+        self.clusters = []
+        self.cluster_params = {}
+        self.global_mean = None
+        self.next_id = 0
+        self.embeddings_ = None
+        self.labels_ = None
+
         # For tracking processed texts and their embeddings
         self.text_embeddings: dict[str, EmbeddingTensor] = {}
+        self.embedding_dim: Optional[int] = None  # Will be set on first embedding
 
-        # Ensure base_measure has a variance value
-        if base_measure is None or "variance" not in base_measure:
-            # We expect variance from the user, and this is a moderate variance
-            # default value. It's not expected to use this default value in practice.
-            self.base_measure: dict[Literal["variance"], float] = {"variance": 0.3}
-        elif not isinstance(base_measure["variance"], float):
-            # Ensure the variance is a float
-            raise TypeError(
-                "The variance in base_measure must be a float, got "
-                f"{type(base_measure['variance'])}"
-            )
-        else:
-            self.base_measure: dict[Literal["variance"], float] = base_measure
-
-    def get_embedding(self, text: str) -> EmbeddingTensor:
+    def get_embedding(self, text: Union[str, list[str]]) -> EmbeddingTensor:
         """
-        Get the embedding for a text.
+        Get the embedding for a text or list of texts with caching.
+
+        This method computes embeddings for text inputs using the sentence transformer
+        model. It implements caching to avoid recomputing embeddings for previously
+        seen texts. The method can handle both single text strings and lists of texts.
 
         Args:
-            text (str): The text to embed.
+            text (Union[str, list[str]]): Text or list of texts to embed.
 
-        Returns: The embedding vector for the text.
+        Returns:
+            EmbeddingTensor: The normalized embedding vector(s) for the text.
+                If input is a single string, returns a single embedding vector.
+                If input is a list, returns an array of embedding vectors.
         """
-        # Check if already computed in this session
-        if text in self.text_embeddings:
-            return self.text_embeddings[text]
+        # Handle single text vs list
+        is_single = isinstance(text, str)
+        texts = [text] if is_single else text
 
-        embedding = self.model.encode(text, show_progress_bar=False)
+        # Get embeddings (using cache when available)
+        results = []
+        uncached_texts = []
+        uncached_indices = []
+
+        # Check cache first
+        for i, t in enumerate(texts):
+            if t in self.text_embeddings:
+                results.append(self.text_embeddings[t])
+            else:
+                uncached_texts.append(t)
+                uncached_indices.append(i)
+
+        # Compute embeddings for uncached texts
+        if uncached_texts:
+            new_embeddings = self.model.encode(uncached_texts, show_progress_bar=False)
+
+            # Update cache and results
+            for i, embedding in zip(uncached_indices, new_embeddings):
+                t = texts[i]
+                normalized_embedding = self._normalize(embedding)
+                self.text_embeddings[t] = normalized_embedding
+                results.append(normalized_embedding)
+
+        # Ensure results are in the original order
+        results = [results[texts.index(t)] for t in texts]
 
         # Set embedding dimension if not set
-        if self.embedding_dim is None:
-            self.embedding_dim = len(embedding)
+        if self.embedding_dim is None and results:
+            self.embedding_dim = len(results[0])
 
-        # Store in session cache
-        self.text_embeddings[text] = embedding
+        # Return single embedding or list based on input
+        return results[0] if is_single else np.array(results)
 
-        return embedding
+    def _normalize(self, embedding: EmbeddingTensor) -> EmbeddingTensor:
+        """
+        Normalize vector to unit length for use with von Mises-Fisher distribution.
 
-    def cosine_similarity(
-        self, embedding1: EmbeddingTensor, embedding2: EmbeddingTensor
+        The von Mises-Fisher distribution is defined on the unit hypersphere, so
+        all vectors must be normalized to unit length.
+
+        Args:
+            embedding (EmbeddingTensor): The embedding vector to normalize.
+
+        Returns:
+            EmbeddingTensor: The normalized embedding vector with unit length.
+        """
+        norm = np.linalg.norm(embedding)
+        # Convert to numpy array to ensure division works properly
+        embedding_np = to_numpy(embedding)
+        return embedding_np / norm if norm > 0 else embedding_np
+
+    def _log_likelihood_base(
+        self, embedding: EmbeddingTensor, cluster_id: int
     ) -> float:
         """
-        Calculate cosine similarity between two embeddings.
+        Calculate von Mises-Fisher log-likelihood for a document in a cluster.
+
+        The von Mises-Fisher distribution is a probability distribution on the
+        unit hypersphere. For unit vectors x and μ, the log-likelihood is proportional
+        to κ·(x·μ), where κ is the concentration parameter and (x·μ) is the dot product.
 
         Args:
-            embedding1: First embedding.
-            embedding2: Second embedding.
+            embedding (EmbeddingTensor): Document embedding vector (normalized).
+            cluster_id (int): The cluster ID to calculate likelihood for.
+                If the cluster doesn't exist and global_mean is None, returns 0.0.
+                If the cluster doesn't exist but global_mean is available, uses
+                global_mean.
 
         Returns:
-            float: Similarity score between 0 and 1, where 1 means identical.
+            float: Log-likelihood of the document under the cluster's vMF distribution.
         """
-        similarity = 1 - cosine(embedding1, embedding2)
-        return max(0.0, similarity)
+        embedding = self._normalize(embedding)
 
-    def log_likelihood(self, embedding: EmbeddingTensor, cluster_id: int) -> float:
-        """
-        Calculate log likelihood of an embedding under a cluster's distribution.
-
-        This implements a multivariate Gaussian likelihood in the embedding space.
-
-        Args:
-            embedding: The embedding to evaluate.
-            cluster_id: The cluster ID.
-
-        Returns:
-            float: Log likelihood of the embedding under the cluster distribution.
-        """
         if cluster_id not in self.cluster_params:
-            # For new clusters, use the base measure
-            return self._log_likelihood_base_measure(embedding)
+            if self.global_mean is None:
+                return 0.0
+            return self.kappa * np.dot(embedding, self.global_mean)
 
-        # Get cluster parameters
+        assert "mean" in self.cluster_params[cluster_id]
         cluster_mean = self.cluster_params[cluster_id]["mean"]
-        variance = self.base_measure["variance"]
 
-        # Calculate squared Mahalanobis distance (simplified for diagonal covariance)
-        squared_dist = np.sum((embedding - cluster_mean) ** 2) / variance
+        return self.kappa * np.dot(embedding, cluster_mean)
 
-        # Log likelihood of multivariate Gaussian
-        if self.embedding_dim is not None:
-            dim = float(self.embedding_dim)
-        else:
-            dim = float(len(embedding))
-
-        log_likelihood = -0.5 * dim * np.log(2 * np.pi * variance) - 0.5 * squared_dist
-
-        return log_likelihood
-
-    def _log_likelihood_base_measure(self, embedding: EmbeddingTensor) -> float:
+    def log_crp_prior(self, cluster_id: Optional[int] = None) -> float:
         """
-        Calculate log likelihood of an embedding under the base measure.
+        Calculate the Chinese Restaurant Process prior probability.
+
+        The Chinese Restaurant Process (CRP) is a stochastic process that defines
+        a probability distribution over partitions of items. In the context of
+        clustering, it provides a prior probability for assigning a document to
+        an existing cluster or creating a new one.
 
         Args:
-            embedding: The embedding to evaluate.
-
-        Returns:
-            float: Log likelihood of the embedding under the base measure.
-        """
-        # For the base measure, we use a wider variance
-        # Ensure we have a valid variance value
-        variance = self.base_measure["variance"] * 10.0
-
-        # For new clusters, we center at the embedding itself
-        if self.embedding_dim is not None:
-            dim = float(self.embedding_dim)
-        else:
-            # Fallback if embedding_dim is not set
-            dim = float(len(embedding))
-
-        # The same value as in the likelihood function ???
-        return -0.5 * dim * np.log(2 * np.pi * variance)
-
-    def log_crp_prior(self, cluster_id: int, total_points: int) -> float:
-        """
-        Calculate log probability of the Chinese Restaurant Process prior.
-
-        Args:
-            cluster_id (int): The cluster ID.
-            total_points (int): Total number of points assigned so far.
+            cluster_id (Optional[int]): The cluster ID.
+                If provided, calculate prior for an existing cluster.
+                If None, calculate prior for a new cluster.
 
         Returns:
             float: Log probability of the cluster under the CRP prior.
         """
-        if cluster_id in self.cluster_params:
-            # Existing cluster
-            cluster_size = self.cluster_params[cluster_id]["count"]
-            return np.log(cluster_size / (self.alpha + total_points))
+        total_documents = len(self.clusters)
+        denominator = self.alpha + total_documents
 
-        # Otherwise its new cluster
-        return np.log(self.alpha / (self.alpha + total_points))
+        if cluster_id is None:
+            return np.log(self.alpha / denominator)
 
-    def assign_cluster(self, text: str) -> int:
+        assert "mean" in self.cluster_params[cluster_id]
+        count = self.cluster_params[cluster_id]["count"]
+        return np.log(count / denominator)
+
+    def log_likelihood(
+        self, embedding: EmbeddingTensor
+    ) -> tuple[dict[int, float], float]:
         """
-        Assign a text to a cluster using proper Bayesian inference.
+        Calculate log-likelihoods for an embedding across all clusters.
 
-        This method computes log probabilities for assigning the text to each existing
-        cluster or creating a new cluster. The probabilities combine:
-
-        1. The CRP prior (Chinese Restaurant Process)
-        2. The likelihood of the text embedding under each cluster's distribution
+        This method computes the log-likelihood of a document embedding under each
+        existing cluster's von Mises-Fisher distribution, as well as under a potential
+        new cluster.
 
         Args:
-            text (str): The text to assign to a cluster.
+            embedding (EmbeddingTensor): Document embedding vector.
 
         Returns:
-            int: The assigned cluster ID.
-
-        Side effects:
-            Updates self.clusters with the cluster assignment for this text.
-            Updates self.cluster_params with the updated cluster parameters.
+            tuple: A tuple containing:
+                - dict[int, float]: Dictionary mapping cluster IDs to their
+                  log-likelihoods.
+                - float: Log-likelihood for a new cluster.
         """
-        # Get embedding for the text
-        embedding = self.get_embedding(text)
+        embedding = self._normalize(embedding)
+        existing_likelihoods = {}
 
-        # Calculate total points assigned so far
-        total_points = len(self.clusters)
+        # Calculate likelihood for each existing cluster
+        for cid in self.cluster_params:
+            existing_likelihoods[cid] = self._log_likelihood_base(embedding, cid)
 
-        # For the first point, always create a new cluster
-        if total_points == 0:
-            new_cluster_id = 0
-            self.clusters.append(new_cluster_id)
-            self.cluster_params[new_cluster_id] = {
-                "mean": to_numpy(embedding),
-                "count": 1,
-            }
+        # Calculate likelihood for a new cluster
+        new_cluster_likelihood = self._log_likelihood_base(embedding, -1)
 
-            return new_cluster_id
+        return existing_likelihoods, new_cluster_likelihood
 
-        # Calculate log probabilities for each existing cluster and a potential
-        # new cluster
-        log_probs = []
+    def _calculate_cluster_probabilities(
+        self, embedding: EmbeddingTensor
+    ) -> tuple[list[Union[int, None]], np.ndarray]:
+        """
+        Calculate the probability distribution over clusters for a document.
+
+        This method combines the CRP prior and von Mises-Fisher likelihood to get
+        the posterior probability of cluster assignment according to the Chinese
+        Restaurant Process. It computes probabilities for assigning the document
+        to each existing cluster or creating a new one.
+
+        Args:
+            embedding (EmbeddingTensor): Document embedding vector.
+
+        Returns:
+            tuple: A tuple containing:
+                - list[Union[int, None]]: List of existing cluster IDs, with None
+                  representing a potential new cluster.
+                - np.ndarray: Probability distribution over clusters
+                  (including new cluster).
+        """
+        embedding = self._normalize(embedding)
+
         cluster_ids = list(self.cluster_params.keys())
+        existing_likelihoods, new_cluster_likelihood = self.log_likelihood(embedding)
 
-        # Consider existing clusters
-        for cluster_id in cluster_ids:
-            # Combine log prior and log likelihood
-            log_prior = self.log_crp_prior(cluster_id, total_points)
-            log_like = self.log_likelihood(embedding, cluster_id)
-            log_probs.append(log_prior + log_like)
+        # Combine prior and likelihood for each cluster
+        scores = []
 
-        # Consider creating a new cluster
-        new_cluster_id = max(cluster_ids) + 1 if cluster_ids else 0
-        log_prior_new = self.log_crp_prior(new_cluster_id, total_points)
+        # Existing clusters
+        for cid in cluster_ids:
+            prior = self.log_crp_prior(cid)
+            likelihood = existing_likelihoods[cid]
+            scores.append(prior + likelihood)
 
-        # For a new cluster, the likelihood is high because it would be centered
-        # at the embedding. We use a fixed high value to encourage new cluster
-        # formation
-        if self.embedding_dim is not None:
-            dim = float(self.embedding_dim)
-        else:
-            dim = float(len(embedding))
+        # New cluster
+        prior_new = self.log_crp_prior()
+        scores.append(prior_new + new_cluster_likelihood)
 
-        # Base measure likelihood with a bonus to encourage new clusters
-        variance = self.base_measure["variance"]
+        # Convert log scores to probabilities
+        scores = np.array(scores)
+        scores -= logsumexp(scores)
+        probabilities = np.exp(scores)  # type: np.ndarray
 
-        # Test: 1
-        log_like_new = -0.5 * dim * np.log(2 * np.pi * variance)  # Normalization term
-        # No squared distance term because the cluster would be
-        # centered at the embedding
+        # Add placeholder for new cluster ID
+        extended_cluster_ids = cluster_ids + [None]  # None represents new cluster
 
-        log_probs.append(log_prior_new + log_like_new)
+        return extended_cluster_ids, probabilities
 
-        # Convert to probabilities and normalize
-        log_probs = np.array(log_probs)
-        log_probs -= logsumexp(log_probs)  # Normalize in log space
-        probs = np.exp(log_probs)
+    def _create_or_update_cluster(
+        self,
+        embedding: EmbeddingTensor,
+        is_new_cluster: bool,
+        existing_cluster_id: Optional[int] = None,
+    ) -> int:
+        """
+        Create a new cluster or update an existing one with a document.
 
-        # Sample from the probability distribution
-        all_cluster_ids = cluster_ids + [new_cluster_id]
-        choice = self.random_state.choice(len(all_cluster_ids), p=probs)
-        chosen_cluster_id = all_cluster_ids[choice]
+        This method either creates a new cluster with the given embedding as its
+        initial mean, or updates an existing cluster's parameters by incorporating
+        the new embedding.
 
-        # Update cluster assignments and parameters
-        self.clusters.append(chosen_cluster_id)
+        Args:
+            embedding (EmbeddingTensor): Document embedding vector.
+            is_new_cluster (bool): Whether to create a new cluster.
+            existing_cluster_id (Optional[int]): ID of existing cluster to update,
+                if is_new_cluster is False.
 
-        if chosen_cluster_id not in self.cluster_params:
-            # Create a new cluster
-            self.cluster_params[chosen_cluster_id] = {
-                "mean": to_numpy(embedding),
-                "count": 1,
-            }
+        Returns:
+            int: The ID of the created or updated cluster.
+        """
+        # TODO: Looks like we can just check if existing_cluster_id is None
+        #       instead of having is_new_cluster flag
+        if is_new_cluster:
+            # Create new cluster
+            cid = self.next_id
+            # Convert to numpy array to ensure compatibility
+            embedding_np = to_numpy(embedding)
+            self.cluster_params[cid] = {"mean": embedding_np, "count": 1}
+            self.next_id += 1
+            self.clusters.append(cid)
+            return cid
+
+        # Update existing cluster
+        assert existing_cluster_id is not None
+        cid = existing_cluster_id
+        params = self.cluster_params[cid]
+        params["count"] += 1
+        params["mean"] = self._normalize(
+            params["mean"] * (params["count"] - 1) + embedding
+        )
+        self.clusters.append(cid)
+
+        return cid
+
+    def assign_cluster(self, embedding: EmbeddingTensor) -> tuple[int, np.ndarray]:
+        """
+        Assign a document embedding to a cluster using Bayesian inference.
+
+        This method computes probabilities for assigning the document to each
+        existing cluster or creating a new one, then samples a cluster assignment
+        from this probability distribution. The probabilities combine the CRP prior
+        and the von Mises-Fisher likelihood.
+
+        Args:
+            embedding (EmbeddingTensor): Document embedding vector.
+
+        Returns:
+            tuple: A tuple containing:
+                - int: The assigned cluster ID.
+                - np.ndarray: Probability distribution over clusters used for
+                  assignment.
+        """
+        # Calculate probabilities over all clusters (including a possible new one)
+        extended_cluster_ids, probs = self._calculate_cluster_probabilities(embedding)
+
+        # Sample a cluster according to the probabilities
+        chosen = self.random_state.choice(len(probs), p=probs)
+
+        # Check if we need to create a new cluster
+        is_new_cluster = (
+            chosen == len(extended_cluster_ids) - 1
+        )  # Last index represents new cluster
+
+        if is_new_cluster:
+            # Create new cluster
+            cluster_id = self._create_or_update_cluster(embedding, is_new_cluster=True)
         else:
             # Update existing cluster
-            current_mean = self.cluster_params[chosen_cluster_id]["mean"]
-            current_count = self.cluster_params[chosen_cluster_id]["count"]
-            emb_array = to_numpy(embedding)
+            cluster_id = self._create_or_update_cluster(
+                embedding,
+                is_new_cluster=False,
+                existing_cluster_id=extended_cluster_ids[chosen],
+            )
 
-            # Update mean using online update formula
-            new_mean = (current_mean * current_count + emb_array) / (current_count + 1)
+        return cluster_id, probs
 
-            self.cluster_params[chosen_cluster_id]["mean"] = new_mean
-            self.cluster_params[chosen_cluster_id]["count"] += 1
-
-        return chosen_cluster_id
-
-    def fit(self, texts: list[str]) -> tuple[list[int], dict]:
+    def fit(self, documents, y: Union[Any, None] = None):
         """
         Train the clustering model on the given text data.
 
-        This method processes each text in the input list, assigning it to a cluster
-        using Bayesian inference. For DirichletProcess, it uses the Chinese Restaurant
-        Process prior. For PitmanYorProcess, it uses the Pitman-Yor Process prior.
-
-        The method automatically detects which model is being used based on the class
-        and applies the appropriate clustering algorithm.
+        This method processes each document in the input, computing its embedding
+        and assigning it to a cluster using Bayesian inference with the Chinese
+        Restaurant Process. It supports both text inputs and pre-computed embeddings.
 
         Args:
-            texts (list[str]): List of text strings to cluster.
+            documents: array-like of shape (n_samples,)
+                The text documents or embeddings to cluster.
+            y: Ignored. Added for compatibility with scikit-learn API.
 
         Returns:
-            tuple[list[int], dict]: A tuple containing:
-                - List of cluster assignments for each text
-                - Dictionary of cluster parameters
-        """
-        logger.info("Start processing %d texts ...", len(texts))
+            self: The fitted model instance.
 
-        # Reset state for a fresh run
+        Side effects:
+            Sets self.embeddings_ with the document embeddings.
+            Sets self.labels_ with the cluster assignments.
+            Updates self.clusters and self.cluster_params with cluster information.
+        """
+        # TODO: from tqdm.auto import tqdm
+        # Generate embeddings from text
+        if isinstance(documents[0], str):
+            self.embeddings_ = self.get_embedding(documents)
+        else:
+            # If embeddings are provided directly
+            self.embeddings_ = np.array([self._normalize(e) for e in documents])
+
+        # Calculate global mean from normalized embeddings
+        self.global_mean = np.mean(self.embeddings_, axis=0)
+
+        # Reset clustering state
         self.clusters = []
         self.cluster_params = {}
+        self.next_id = 0
 
-        def format_process(class_name: str) -> str:
-            """
-            Format a class name into a human-readable progress description.
+        # Assign all documents to clusters
+        assignments = []
+        for emb in self.embeddings_:
+            cid, _ = self.assign_cluster(emb)
+            assignments.append(cid)
 
-            Converts CamelCase class names to space-separated words and handles
-            special cases like 'PitmanYorProcess' to 'Pitman-Yor Process'.
+        self.labels_ = np.array(assignments)
+        return self
 
-            Args:
-                class_name (str): The name of the class to format
+    def predict(self, documents):
+        """
+        Predict the closest cluster for each sample in documents.
 
-            Returns:
-                str: Formatted string with timestamp and readable class name
-                     in the format:
-                     "YYYY-MM-DD HH:MM:SS - INFO - Clustering with {formatted_name}"
-            """
-            import re
-            from datetime import datetime
+        This method computes the most likely cluster assignment for each document
+        based on the von Mises-Fisher likelihood, without updating the cluster
+        parameters. It supports both text inputs and pre-computed embeddings.
 
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            formatted_name = (
-                "Pitman-Yor Process"  # Special case for Pitman-Yor
-                if class_name == "PitmanYorProcess"
-                else re.sub(r"(?<!^)(?=[A-Z])", " ", class_name)
-            )
+        Args:
+            documents: array-like of shape (n_samples,)
+                The text documents or embeddings to predict clusters for.
 
-            return f"{timestamp} - INFO - Clustering with {formatted_name}"
+        Returns:
+            ndarray of shape (n_samples,): Cluster labels for each document.
+                Returns -1 if no clusters exist yet.
+        """
+        # Generate embeddings from text
+        if isinstance(documents[0], str):
+            embeddings = self.get_embedding(documents)
+        else:
+            # If embeddings are provided directly
+            embeddings = np.array([self._normalize(e) for e in documents])
 
-        # Process all texts with a single progress bar
-        for text in tqdm(
-            texts,
-            desc=format_process(self.__class__.__name__),
-            total=len(texts),
-            disable=None,  # Disable on non-TTY
-            unit=" texts",
-        ):
-            self.assign_cluster(text)
+        predictions = []
+        for emb in embeddings:
+            # For prediction, we use a deterministic approach (max probability)
+            scores = []
+            for cid in self.cluster_params:
+                likelihood = self._log_likelihood_base(emb, cid)
+                scores.append((cid, likelihood))
 
-        return self.clusters, self.cluster_params
+            if not scores:  # If no clusters exist yet
+                predictions.append(-1)
+            else:
+                best_cluster = max(scores, key=lambda x: x[1])[0]
+                predictions.append(best_cluster)
+
+        return np.array(predictions)
+
+    def fit_predict(self, documents, y: Union[Any, None] = None):
+        """
+        Fit the model and predict cluster labels for documents.
+
+        This method is a convenience function that calls fit() followed by
+        returning the cluster labels from the fitting process.
+
+        Args:
+            documents: array-like of shape (n_samples,)
+                The text documents or embeddings to cluster.
+            y: Ignored. Added for compatibility with scikit-learn API.
+
+        Returns:
+            ndarray of shape (n_samples,): Cluster labels for each document.
+        """
+        self.fit(documents)
+        return self.labels_
 
 
 class PitmanYorProcess(DirichletProcess):
     """
-    Pitman-Yor Process clustering implementation for text data.
+    PYP clustering implementation for text data using von Mises-Fisher distribution.
 
     The Pitman-Yor Process is a generalization of the Dirichlet Process that introduces
     a discount parameter (sigma) to control the power-law behavior of the cluster
     size distribution. It is particularly effective for modeling natural language
-    phenomena that exhibit power-law distributions.
+    phenomena that exhibit power-law distributions, such as word frequencies or
+    topic distributions.
 
     This implementation extends the DirichletProcess class, adding the sigma parameter
     and modifying the cluster assignment probabilities according to the Pitman-Yor
-    Process.
+    Process while maintaining the von Mises-Fisher likelihood model for directional
+    text embeddings.
+
+    The mathematical foundation of the Pitman-Yor Process involves two key parameters:
+
+        - The concentration parameter alpha (α > -σ), controlling the overall
+          tendency to create new clusters
+        - The discount parameter sigma (0 ≤ σ < 1), controlling the power-law behavior
+
+    As σ approaches 1, the distribution exhibits heavier tails (more small clusters),
+    while σ = 0 reduces to the standard Dirichlet Process.
 
     Attributes:
-        alpha (float): Concentration parameter inherited from DirichletProcess.
-        sigma (float): Discount parameter controlling power-law behavior.
+        alpha (float): Concentration parameter for new cluster creation.
+            Higher values lead to more clusters.
+        kappa (float): Precision parameter for the von Mises-Fisher distribution.
+            Higher values lead to tighter, more concentrated clusters.
+        sigma (float): Discount parameter controlling power-law behavior (0 ≤ σ < 1).
+        model (SentenceTransformer): Sentence transformer model used for text
+            embeddings.
+        random_state (numpy.random.Generator): Random state for reproducibility.
         clusters (list[int]): List of cluster assignments for each processed text.
         cluster_params (dict): Dictionary of cluster parameters for each cluster.
-        model: Sentence transformer model used for text embeddings.
+            Contains 'mean' (centroid) and 'count' (number of points).
+        global_mean (ndarray): Global mean of all document embeddings.
+        next_id (int): Next available cluster ID.
+        embeddings_ (ndarray): Document embeddings after fitting.
+        labels_ (ndarray): Cluster assignments after fitting.
+        text_embeddings (dict): Cache of text to embedding mappings.
+        embedding_dim (Optional[int]): Dimension of the embedding vectors.
     """
 
     def __init__(
         self,
         alpha: float,
+        kappa: float,
         sigma: float,
-        base_measure: Optional[dict] = None,
-        similarity_metric: Optional[
-            Callable[[EmbeddingTensor, EmbeddingTensor], float]
-        ] = None,
+        model_name: Optional[str] = "all-MiniLM-L6-v2",
         random_state: Optional[int] = None,
     ):
         """
-        Initialize a Pitman-Yor Process clustering model.
+        Initialize a PYP clustering model with von Mises-Fisher likelihood.
+
+        The mathematical requirement for the Pitman-Yor Process is:
+
+        - The discount parameter σ must be in [0,1)
+        - The concentration parameter α must satisfy α > -σ
+
+        The constraint α > -σ ensures that the numerator in the new
+        table probability calculation (α + K*σ) remains positive even
+        when K=0. This is essential for proper probabilistic behavior of the model.
 
         Args:
-            alpha (float): Concentration parameter controlling the propensity to
-                create new clusters. Higher values lead to more clusters. Must
-                satisfy: alpha > -sigma.
-            sigma (float): Discount parameter controlling power-law behavior.
-                The value must satisfy: sigma ∈ [0.0, 1.0). As sigma approaches
-                1.0, the distribution exhibits heavier tails; sigma = 0.0 corresponds
-                to the :class:`DirichletProcess`, which is irrelevant for this
-                implementation.
-            base_measure (Optional[dict]): Base measure parameters for the PYP.
-                Should contain 'variance' key for the likelihood model.
-            similarity_metric (Optional[Callable]): Function to compute similarity
-                between embeddings. If None, uses
-                :meth:`DirichletProcess.cosine_similarity`.
+            alpha (float): Concentration parameter for the Pitman-Yor Process.
+                Higher values encourage formation of more clusters.
+                Must satisfy: α > -σ.
+            kappa (float): Precision parameter for the von Mises-Fisher distribution.
+                Higher values lead to tighter, more concentrated clusters.
+            sigma (float): Discount parameter for the Pitman-Yor Process (0 ≤ σ < 1).
+                Controls the power-law behavior. Higher values create more
+                power-law-like cluster size distributions. When σ=0, the model
+                reduces to a Dirichlet Process.
+            model_name (Optional[str]): Name of the sentence transformer model to use.
+                Defaults to "all-MiniLM-L6-v2".
             random_state (Optional[int]): Random seed for reproducibility.
+                If None, then fresh, unpredictable entropy will be pulled from the OS.
 
         Raises:
             ValueError: If sigma ∉ [0.0, 1.0) or if alpha ≤ -sigma.
-            TypeError: If base_measure is not a dict or does not contain 'variance' key.
         """
         if sigma < 0.0 or sigma >= 1.0:
             raise ValueError(
@@ -458,132 +593,115 @@ class PitmanYorProcess(DirichletProcess):
                 f"for sigma={sigma}"
             )
 
-        super().__init__(alpha, 0.0, base_measure, similarity_metric, random_state)
+        super().__init__(
+            alpha=alpha, kappa=kappa, model_name=model_name, random_state=random_state
+        )
         self.sigma = sigma
 
-    def log_pyp_prior(self, cluster_id: int, total_points: int) -> float:
+    def log_pyp_prior(self, cluster_id: Optional[int] = None) -> float:
         """
-        Calculate log probability of the Pitman-Yor Process prior.
+        Calculate the Pitman-Yor Process prior probability.
+
+        The Pitman-Yor Process generalizes the Chinese Restaurant Process with the
+        introduction of a discount parameter σ. The probability of a new customer
+        (document) joining an existing table (cluster) k or starting a new table is:
+
+        P(existing cluster k) = (n_k - σ) / (n + α)
+        P(new cluster) = (α + K*σ) / (n + α)
+
+        where:
+        - n_k is the number of customers at table k
+        - n is the total number of customers
+        - K is the current number of tables
+        - σ is the discount parameter
+        - α is the concentration parameter
 
         Args:
-            cluster_id (int): The cluster ID.
-            total_points (int): Total number of points assigned so far.
+            cluster_id (Optional[int]): The cluster ID.
+                If provided, calculate prior for an existing cluster.
+                If None, calculate prior for a new cluster.
 
         Returns:
             float: Log probability of the cluster under the PYP prior.
         """
-        if cluster_id in self.cluster_params:
-            # Existing cluster
-            cluster_size = self.cluster_params[cluster_id]["count"]
-            return np.log(
-                max(0, cluster_size - self.sigma) / (self.alpha + total_points)
-            )
+        total_documents = len(self.clusters)
 
-        # Otherwise it's new cluster
-        num_tables = len(self.cluster_params)
-        return np.log(
-            (self.alpha + self.sigma * num_tables) / (self.alpha + total_points)
-        )
+        # If no documents processed yet, return uniform prior
+        if total_documents == 0:
+            return 0.0
 
-    def assign_cluster(self, text: str) -> int:
+        # Number of existing clusters/tables
+        num_clusters = len(self.cluster_params)
+        denominator = total_documents + self.alpha
+
+        if cluster_id is None:
+            # Prior for a new cluster: (alpha + K*sigma) / (n + alpha)
+            numerator = self.alpha + num_clusters * self.sigma
+            return np.log(numerator / denominator)
+
+        # Prior for an existing cluster: (n_k - sigma) / (n + alpha)
+        assert "count" in self.cluster_params[cluster_id]
+        count = self.cluster_params[cluster_id]["count"]
+        numerator = count - self.sigma
+
+        # If numerator is negative or zero, use a small positive value
+        if numerator <= 0:
+            numerator = 1e-10
+
+        return np.log(numerator / denominator)
+
+    def _calculate_cluster_probabilities(
+        self, embedding: EmbeddingTensor
+    ) -> tuple[list[Union[int, None]], np.ndarray]:
         """
-        Assign a text to a cluster using proper Bayesian inference with PYP.
+        Calculate the probability distribution over clusters for a document using PYP.
 
-        This method computes log probabilities for assigning the text to each existing
-        cluster or creating a new cluster. The probabilities combine:
+        This method combines the PYP prior and von Mises-Fisher likelihood to get
+        the posterior probability of cluster assignment. It computes probabilities
+        for assigning the document to each existing cluster or creating a new one.
 
-        1. The PYP prior (Pitman-Yor Process)
-        2. The likelihood of the text embedding under each cluster's distribution
+        The key difference from the Dirichlet Process is the use of the Pitman-Yor
+        prior, which introduces the discount parameter σ to create power-law behavior
+        in the cluster size distribution.
 
         Args:
-            text (str): The text to assign to a cluster.
+            embedding (EmbeddingTensor): Document embedding vector.
 
         Returns:
-            int: The assigned cluster ID.
-
-        Side effects:
-            Updates self.clusters with the cluster assignment for this text.
-            Updates self.cluster_params with the updated cluster parameters.
+            tuple: A tuple containing:
+                - list[Union[int, None]]: List of existing cluster IDs, with None
+                  representing a potential new cluster.
+                - np.ndarray: Probability distribution over clusters
+                  (including new cluster).
         """
-        # Get embedding for the text
-        embedding = self.get_embedding(text)
+        # Normalize input vector
+        embedding = self._normalize(embedding)
 
-        # Calculate total points assigned so far
-        total_points = len(self.clusters)
-
-        # For the first point, always create a new cluster
-        if total_points == 0:
-            new_cluster_id = 0
-            self.clusters.append(new_cluster_id)
-            self.cluster_params[new_cluster_id] = {
-                "mean": to_numpy(embedding),
-                "count": 1,
-            }
-
-            return new_cluster_id
-
-        # Calculate log probabilities for each existing cluster and a potential
-        # new cluster
-        log_probs = []
+        # Get existing cluster IDs
         cluster_ids = list(self.cluster_params.keys())
 
-        # Consider existing clusters
-        for cluster_id in cluster_ids:
-            # Combine log prior and log likelihood
-            log_prior = self.log_pyp_prior(cluster_id, total_points)
-            log_like = self.log_likelihood(embedding, cluster_id)
-            log_probs.append(log_prior + log_like)
+        # Calculate likelihoods
+        existing_likelihoods, new_cluster_likelihood = self.log_likelihood(embedding)
 
-        # Consider creating a new cluster
-        new_cluster_id = max(cluster_ids) + 1 if cluster_ids else 0
-        log_prior_new = self.log_pyp_prior(new_cluster_id, total_points)
+        # Combine prior and likelihood for each cluster
+        scores = []
 
-        # For a new cluster, the likelihood is high because it would be centered
-        # at the embedding. We use a fixed high value to encourage new cluster
-        # formation
-        if self.embedding_dim is not None:
-            dim = float(self.embedding_dim)
-        else:
-            dim = float(len(embedding))
+        # Existing clusters
+        for cid in cluster_ids:
+            prior = self.log_pyp_prior(cid)  # Use PYP prior instead of CRP
+            likelihood = existing_likelihoods[cid]
+            scores.append(prior + likelihood)
 
-        # Base measure likelihood with a bonus to encourage new clusters
-        variance = self.base_measure["variance"]
-        # The same value as in the likelihood function ???
-        log_like_new = -0.5 * dim * np.log(2 * np.pi * variance)  # Normalization term
-        # No squared distance term because the cluster would be
-        # centered at the embedding
+        # New cluster
+        prior_new = self.log_pyp_prior()  # Use PYP prior for new cluster
+        scores.append(prior_new + new_cluster_likelihood)
 
-        log_probs.append(log_prior_new + log_like_new)
+        # Convert log scores to probabilities
+        scores = np.array(scores)
+        scores -= logsumexp(scores)
+        probabilities = np.exp(scores)
 
-        # Convert to probabilities and normalize
-        log_probs = np.array(log_probs)
-        log_probs -= logsumexp(log_probs)  # Normalize in log space
-        probs = np.exp(log_probs)
+        # Add placeholder for new cluster ID
+        extended_cluster_ids = cluster_ids + [None]  # None represents new cluster
 
-        # Sample from the probability distribution
-        all_cluster_ids = cluster_ids + [new_cluster_id]
-        choice = self.random_state.choice(len(all_cluster_ids), p=probs)
-        chosen_cluster_id = all_cluster_ids[choice]
-
-        # Update cluster assignments and parameters
-        self.clusters.append(chosen_cluster_id)
-
-        if chosen_cluster_id not in self.cluster_params:
-            # Create a new cluster
-            self.cluster_params[chosen_cluster_id] = {
-                "mean": to_numpy(embedding),
-                "count": 1,
-            }
-        else:
-            # Update existing cluster
-            current_mean = self.cluster_params[chosen_cluster_id]["mean"]
-            current_count = self.cluster_params[chosen_cluster_id]["count"]
-            emb_array = to_numpy(embedding)
-
-            # Update mean using online update formula
-            new_mean = (current_mean * current_count + emb_array) / (current_count + 1)
-
-            self.cluster_params[chosen_cluster_id]["mean"] = new_mean
-            self.cluster_params[chosen_cluster_id]["count"] += 1
-
-        return chosen_cluster_id
+        return extended_cluster_ids, probabilities
